@@ -32,6 +32,7 @@ import com.sk89q.worldedit.command.util.AsyncCommandBuilder;
 import com.sk89q.worldedit.extension.platform.Actor;
 import com.sk89q.worldedit.extension.platform.Capability;
 import com.sk89q.worldedit.util.Location;
+import com.sk89q.worldedit.util.auth.AuthorizationException;
 import com.sk89q.worldedit.util.formatting.component.ErrorFormat;
 import com.sk89q.worldedit.util.formatting.component.LabelFormat;
 import com.sk89q.worldedit.util.formatting.component.SubtleFormat;
@@ -68,11 +69,8 @@ import com.sk89q.worldguard.protection.managers.migration.MigrationException;
 import com.sk89q.worldguard.protection.managers.migration.UUIDMigration;
 import com.sk89q.worldguard.protection.managers.storage.DriverType;
 import com.sk89q.worldguard.protection.managers.storage.RegionDriver;
-import com.sk89q.worldguard.protection.regions.GlobalProtectedRegion;
-import com.sk89q.worldguard.protection.regions.ProtectedPolygonalRegion;
-import com.sk89q.worldguard.protection.regions.ProtectedRegion;
+import com.sk89q.worldguard.protection.regions.*;
 import com.sk89q.worldguard.protection.regions.ProtectedRegion.CircularInheritanceException;
-import com.sk89q.worldguard.protection.regions.RegionContainer;
 import com.sk89q.worldguard.protection.util.DomainInputResolver.UserLocatorPolicy;
 import com.sk89q.worldguard.session.Session;
 import com.sk89q.worldguard.util.Enums;
@@ -133,7 +131,7 @@ public final class RegionCommands extends RegionCommandsBase {
              flags = "ng",
              desc = "Defines a region",
              min = 1)
-    public void define(CommandContext args, Actor sender) throws CommandException {
+    public void define(CommandContext args, Actor sender) throws CommandException, AuthorizationException {
         warnAboutSaveFailures(sender);
         LocalPlayer player = worldGuard.checkPlayer(sender);
 
@@ -142,7 +140,7 @@ public final class RegionCommands extends RegionCommandsBase {
             throw new CommandPermissionsException();
         }
 
-        String id = checkRegionId(args.getString(0), false);
+        RegionIdentifier id = processRegionId(sender, args.getString(0), false);
 
         World world = player.getWorld();
         RegionManager manager = checkRegionManager(world);

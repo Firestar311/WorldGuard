@@ -33,6 +33,7 @@ import com.sk89q.worldedit.regions.Polygonal2DRegion;
 import com.sk89q.worldedit.regions.Region;
 import com.sk89q.worldedit.regions.selector.CuboidRegionSelector;
 import com.sk89q.worldedit.regions.selector.Polygonal2DRegionSelector;
+import com.sk89q.worldedit.util.auth.AuthorizationException;
 import com.sk89q.worldedit.util.formatting.component.ErrorFormat;
 import com.sk89q.worldedit.util.formatting.component.SubtleFormat;
 import com.sk89q.worldedit.util.formatting.text.TextComponent;
@@ -49,13 +50,11 @@ import com.sk89q.worldguard.protection.flags.Flag;
 import com.sk89q.worldguard.protection.flags.FlagContext;
 import com.sk89q.worldguard.protection.flags.InvalidFlagFormat;
 import com.sk89q.worldguard.protection.managers.RegionManager;
-import com.sk89q.worldguard.protection.regions.GlobalProtectedRegion;
-import com.sk89q.worldguard.protection.regions.ProtectedCuboidRegion;
-import com.sk89q.worldguard.protection.regions.ProtectedPolygonalRegion;
-import com.sk89q.worldguard.protection.regions.ProtectedRegion;
-import com.sk89q.worldguard.protection.regions.RegionContainer;
+import com.sk89q.worldguard.protection.regions.*;
 
+import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 class RegionCommandsBase {
@@ -96,6 +95,25 @@ class RegionCommandsBase {
     }
 
     /**
+     * Validate a region name.
+     *
+     * @param name the name
+     * @param allowGlobal whether __global__ is allowed
+     * @throws CommandException thrown on an error
+     */
+    protected static void checkName(String name, boolean allowGlobal) throws CommandException {
+        if (!RegionIdentifier.isValidName(name)) {
+            throw new CommandException(
+                    "The region name of '" + name + "' contains characters that are not allowed.");
+        }
+
+        if (!allowGlobal && name.equalsIgnoreCase("__global__")) { // Sorry, no global
+            throw new CommandException(
+                    "Sorry, you can't use __global__ here.");
+        }
+    }
+
+    /**
      * Validate a region ID.
      *
      * @param id the id
@@ -103,18 +121,127 @@ class RegionCommandsBase {
      * @return the id given
      * @throws CommandException thrown on an error
      */
+    @Deprecated
     protected static String checkRegionId(String id, boolean allowGlobal) throws CommandException {
-        if (!ProtectedRegion.isValidId(id)) {
-            throw new CommandException(
-                    "The region name of '" + id + "' contains characters that are not allowed.");
-        }
-
-        if (!allowGlobal && id.equalsIgnoreCase("__global__")) { // Sorry, no global
-            throw new CommandException(
-                    "Sorry, you can't use __global__ here.");
-        }
-
+        checkName(id, allowGlobal);
         return id;
+    }
+
+    /**
+     * Validate a region namespace.
+     *
+     * @param namespace the namespace name
+     * @throws CommandException thrown on an error
+     */
+    protected static void checkNamespace(String namespace) throws CommandException {
+        if (!RegionIdentifier.isValidNamespace(namespace)) {
+            throw new CommandException(
+                    "The region namespace of '" + namespace + "' contains characters that are not allowed.");
+        }
+    }
+
+    /**
+     * Get the unqualified name from a possibly qualified region identifier.
+     *
+     * @param id the unprocessed region identifier
+     * @return the unqualified name, or an empty string if not present
+     */
+    protected static String getUnqualifiedName(String id) {
+        int namespaceSeparatorIndex = id.lastIndexOf(':');
+        if (namespaceSeparatorIndex == -1) {
+            return id;
+        }
+
+        int unqualifiedNameStartIndex = namespaceSeparatorIndex + 1;
+        if (unqualifiedNameStartIndex == id.length()) {
+            return "";
+        }
+
+        return id.substring(unqualifiedNameStartIndex);
+    }
+
+    /**
+     * Get the namespace name from a possibly qualified region identifier.
+     *
+     * @param id the unprocessed region identifier
+     * @return an optional containing the namespace name, or an empty string if qualified,
+     *         if not qualified, an empty optional is returned
+     */
+    protected static Optional<String> getNamespace(String id) {
+        int namespaceSeparatorIndex = id.lastIndexOf(':');
+        if (namespaceSeparatorIndex == -1) {
+            return Optional.empty();
+        }
+
+        return Optional.of(id.substring(0, namespaceSeparatorIndex));
+    }
+
+    /***
+     * Expand macros in the namespace name.
+     *
+     * @param namespace the unexpanded namespace name
+     * @return the expanded namespace name
+     */
+    protected static String expandNamespace(String namespace) {
+        if (namespace.startsWith("#")) {
+            String playerName = namespace.substring(1);
+            // TODO: Resolve player uuid from name, and return that instead.
+            return playerName;
+        }
+
+        return namespace;
+    }
+
+    /**
+     * Get the default namespace for a given actor.
+     *
+     * @param sender the sender who's default namespace we intend to retrieve.
+     * @return the default namespace
+     */
+    protected static String getDefaultNamespace(Actor sender) {
+        return sender.getUniqueId().toString();
+    }
+
+    /**
+     * Process a possibly qualified region identifier into a RegionIdentifier.
+     *
+     * This method takes a possibly qualified region identifier, and processes it, expanding any namespace macros,
+     * running permissions checks, and validating the names for invalid character.
+     *
+     * @param sender the contextual sender to use for checks and macro expansions
+     * @param id the possibly unqualified id
+     * @param allowGlobal whether or not this method should allow use of the name __global__ name
+     * @return the processed region id
+     * @throws AuthorizationException if a permission check fails
+     * @throws CommandException if a name validation check fails
+     */
+    protected static RegionIdentifier processRegionId(Actor sender, String id, boolean allowGlobal) throws AuthorizationException, CommandException {
+        String unqualifiedName = getUnqualifiedName(id);
+        checkName(unqualifiedName, allowGlobal);
+
+        Optional<String> optProvidedNamespace = getNamespace(id).map(RegionCommandsBase::expandNamespace);
+        String namespace = optProvidedNamespace.orElse(getDefaultNamespace(sender));
+        checkNamespace(namespace);
+
+        // TODO use more informative permission checks
+
+        if (namespace.equals("")) {
+            sender.checkPermission("worldguard.region.namespace.global");
+            return new RegionIdentifier(null, unqualifiedName);
+        }
+
+        try {
+            UUID namespacePlayerId = UUID.fromString(namespace);
+            if (namespacePlayerId.equals(sender.getUniqueId())) {
+                sender.checkPermission("worldguard.region.namespace.player.self");
+            } else {
+                sender.checkPermission("worldguard.region.namespace.player.other");
+            }
+        } catch (IllegalArgumentException ex) {
+            sender.checkPermission("worldguard.region.namespace." + namespace);
+        }
+
+        return new RegionIdentifier(namespace, unqualifiedName);
     }
 
     /**
@@ -244,7 +371,19 @@ class RegionCommandsBase {
      * @param id the ID
      * @throws CommandException thrown if the ID already exists
      */
+    @Deprecated
     protected static void checkRegionDoesNotExist(RegionManager manager, String id, boolean mayRedefine) throws CommandException {
+        checkRegionDoesNotExist(manager, new RegionIdentifier(id), mayRedefine);
+    }
+
+    /**
+     * Check that a region with the given ID does not already exist.
+     *
+     * @param manager the manager
+     * @param id the identifier
+     * @throws CommandException thrown if the ID already exists
+     */
+    protected static void checkRegionDoesNotExist(RegionManager manager, RegionIdentifier id, boolean mayRedefine) throws CommandException {
         if (manager.hasRegion(id)) {
             throw new CommandException("A region with that name already exists. Please choose another name." +
                     (mayRedefine ? " To change the shape, use /region redefine " + id + "." : ""));
@@ -280,7 +419,20 @@ class RegionCommandsBase {
      * @return a new region
      * @throws CommandException thrown on an error
      */
+    @Deprecated
     protected static ProtectedRegion checkRegionFromSelection(LocalPlayer player, String id) throws CommandException {
+        return checkRegionFromSelection(player, new RegionIdentifier(id));
+    }
+
+    /**
+     * Create a {@link ProtectedRegion} from the player's selection.
+     *
+     * @param player the player
+     * @param id the identifier of the new region
+     * @return a new region
+     * @throws CommandException thrown on an error
+     */
+    protected static ProtectedRegion checkRegionFromSelection(LocalPlayer player, RegionIdentifier id) throws CommandException {
         Region selection = checkSelection(player);
 
         // Detect the type of region from WorldEdit
